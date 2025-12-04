@@ -41,8 +41,11 @@
 #include <uORB/topics/esc_status.h>
 #include <uORB/topics/vehicle_command.h>
 #include <uORB/topics/vehicle_command_ack.h>
+#include <uORB/topics/debug_array.h>	
 
 #include "DShotTelemetry.h"
+
+#include <matrix/math.hpp>
 
 using namespace time_literals;
 
@@ -59,6 +62,44 @@ static constexpr unsigned int DSHOT1200 = 1200000u;
 static constexpr int DSHOT_DISARM_VALUE = 0;
 static constexpr int DSHOT_MIN_THROTTLE = 1;
 static constexpr int DSHOT_MAX_THROTTLE = 1999;
+
+// quadcopter model to hold motor_allocation matrix and inverse.
+// Values are predefined.
+struct QuadcopterModel {
+    
+    matrix::Matrix<float, 4, 4> motor_allocation_;
+    
+    matrix::Matrix<float, 4, 4> motor_allocation_inv_;
+
+	matrix::Matrix<float, 4, 4> inertia_matrix_; 
+
+    QuadcopterModel() = default;
+
+    void set_motor_allocation()
+    {
+        const float m[4][4] = {
+            {  1.000000f,  1.000000f,  1.000000f,  1.000000f }, // thrust
+            { -0.707107f,  0.707107f,  0.707107f, -0.707107f }, // roll
+            {  0.707107f, -0.707107f,  0.707107f, -0.707107f }, // pitch
+            {  1.000000f,  1.000000f, -1.000000f, -1.000000f }  // yaw
+        };
+
+        motor_allocation_ = matrix::Matrix<float, 4, 4>(m);
+        compute_inverse();
+		const float j[4][4] = {
+			{1,0,0,0},
+			{0,1,0,0},
+			{0,0,1,0},
+			{0,0,0,1}
+		}
+		inertia_matrix_ = matrix::Matrix<float, 4,4>(j);
+    }
+
+    void compute_inverse()
+    {
+		motor_allocation_inv_ = matrix::inv(motor_allocation_);
+    }
+};
 
 class DShot : public cdev::CDev, public ModuleBase<DShot>, public OutputModuleInterface
 {
@@ -173,6 +214,26 @@ private:
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 	uORB::Subscription _vehicle_command_sub{ORB_ID(vehicle_command)};
 	uORB::Publication<vehicle_command_ack_s> _command_ack_pub{ORB_ID(vehicle_command_ack)};
+
+	// changes for direct motor control from the NMPC
+	QuadcopterModel quadcopter;
+	uORB::Subscription _desired_value_sub{ORB_ID(debug_array)};
+	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehilcle_angular_velocity)};
+	uORB::Subscription _actuator_motors_sub{ORB_ID(actuator_motors)};
+
+	// motor thrust 
+    matrix::Vector<float, 4> last_motor_thrusts_{0.0f, 0.0f, 0.0f, 0.0f};
+    matrix::Vector<float, 4> current_motor_thrusts_{0.0f, 0.0f, 0.0f, 0.0f};
+
+	// motor thrust command computed by allocation inverse (T)
+	matrix::Vector<float, 4> T_{0.0f, 0.0f, 0.0f, 0.0f};
+
+    // angular rates and derivative
+    matrix::Vector3f last_omega_{0.0f, 0.0f, 0.0f};
+    matrix::Vector3f last_omega_dot_{0.0f, 0.0f, 0.0f};
+    hrt_abstime last_omega_time_{0};
+
+    static constexpr float ang_acc_filter_alpha_ = 0.1f;
 
 	DEFINE_PARAMETERS(
 		(ParamInt<px4::params::DSHOT_CONFIG>)   _param_dshot_config,

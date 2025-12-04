@@ -93,6 +93,9 @@ int DShot::init()
 
 	ScheduleNow();
 
+	// changes for direct motor control
+	quadcopter.set_motor_allocation();
+
 	return OK;
 }
 
@@ -144,7 +147,6 @@ void DShot::enable_dshot_outputs(const bool enabled)
 
 				if (tim_config == -5) {
 					dshot_frequency_request = DSHOT150;
-
 				} else if (tim_config == -4) {
 					dshot_frequency_request = DSHOT300;
 
@@ -157,7 +159,6 @@ void DShot::enable_dshot_outputs(const bool enabled)
 				} else {
 					_output_mask &= ~channels; // don't use for dshot
 				}
-
 				if (dshot_frequency_request != 0) {
 					if (dshot_frequency != 0 && dshot_frequency != dshot_frequency_request) {
 						PX4_WARN("Only supporting a single frequency, adjusting param %s", param_name);
@@ -274,7 +275,7 @@ void DShot::init_telemetry(const char *device)
 
 	int ret = _telemetry->handler.init(device);
 
-	if (ret != 0) {
+	if (ret != 0) {s
 		PX4_ERR("telemetry init failed (%i)", ret);
 	}
 
@@ -416,6 +417,7 @@ bool DShot::updateOutputs(bool stop_motors, uint16_t outputs[MAX_ACTUATORS],
 			requested_telemetry_index = request_esc_info();
 
 		} else {
+			
 			requested_telemetry_index = _mixing_output.reorderedMotorIndex(_telemetry->handler.getRequestMotorIndex());
 		}
 	}
@@ -503,7 +505,11 @@ void DShot::Run()
 
 	SmartLock lock_guard(_lock);
 
+	printf(" inside run function \n");
+
 	perf_begin(_cycle_perf);
+
+	send_alpha_to_motors();
 
 	_mixing_output.update();
 
@@ -532,7 +538,6 @@ void DShot::Run()
 	if (_parameter_update_sub.updated()) {
 		update_params();
 	}
-
 	// telemetry device update request?
 	if (_request_telemetry_init.load()) {
 		init_telemetry(_telemetry_device);
@@ -577,11 +582,14 @@ void DShot::handle_vehicle_commands()
 					function = function - first_servo_function + actuator_test_s::FUNCTION_SERVO1;
 
 				} else {
+
 					function = INT32_MAX;
 				}
 
 			} else {
+
 				function -= 1000;
+				
 			}
 
 			int type = (int)(vehicle_command.param1 + 0.5f);
@@ -663,7 +671,6 @@ int DShot::ioctl(file *filp, int cmd, unsigned long arg)
 			const char *buf = (const char *)arg;
 			unsigned buflen = strlen(buf);
 			ret = _mixing_output.loadMixer(buf, buflen);
-
 			break;
 		}
 
@@ -672,12 +679,98 @@ int DShot::ioctl(file *filp, int cmd, unsigned long arg)
 		break;
 	}
 
-	// if nobody wants it, let CDev have it
+	// if nobody wants it, let CDev have it. root function of ioctl , for device where it the command is send.
 	if (ret == -ENOTTY) {
 		ret = CDev::ioctl(filp, cmd, arg);
 	}
 
 	return ret;
+}
+
+void DShot::send_alpha_to_motors()
+{
+	// Read desired values published on debug_array (used here as desired torque/alpha inputs)
+	debug_array_s desired_data;
+	matrix::Vector3f desired_alpha{0.0f, 0.0f, 0.0f};
+	if (_desired_value_sub.updated()) {
+		_desired_value_sub.copy(&desired_data);
+		
+		// desired_alpha is expected in desired_data.data[1..3]
+		desired_alpha(0) = desired_data.data[1];
+		desired_alpha(1) = desired_data.data[2];
+		desired_alpha(2) = desired_data.data[3];
+	}
+
+
+	// read angular velocity
+	vehicle_angular_velocity_s angular_velocity;
+	if (_vehicle_angular_velocity_sub.update(&angular_velocity)) {
+		matrix::Vector3f current_omega(angular_velocity.xyz);
+
+		float dt = 0.f;
+
+		if (last_omega_time_ > 0) {
+			dt = (angular_velocity.timestamp - last_omega_time_) * 1e-6f;
+		}
+
+		last_omega_time_ = angular_velocity.timestamp;
+
+		matrix::Vector3f omega_dot{0.0f, 0.0f, 0.0f};
+		if (dt > 0.f) {
+			omega_dot = (current_omega - last_omega_) / dt;
+		}
+
+		// implement the FIR filter for last_omega_dot and last_motor_thrusts
+		last_omega_dot_ = ang_acc_filter_alpha_ * omega_dot + (1 - ang_acc_filter_alpha_) * last_omega_dot_;
+		last_motor_thrusts_ = ang_acc_filter_alpha_ * current_motor_thrusts_ + (1 - ang_acc_filter_alpha_) * last_motor_thrusts_;
+
+		// residual torque (use quadcopter inertia matrix)
+		matrix::Vector3f residual_torque = quadcopter.inertia_matrix_ * (desired_alpha - last_omega_dot_);
+
+		// measured force/torques from last motor thrusts
+		matrix::Vector<float, 4> measured_force_torques = quadcopter.motor_allocation_ * last_motor_thrusts_;
+
+		matrix::Vector3f last3(measured_force_torques.slice<3, 1>(1, 0));
+
+		matrix::Vector3f final_torque = last3 + residual_torque;
+
+		matrix::Vector<float, 4> indi_force_torques;
+		indi_force_torques(0) = desired_data.data[0]; // collective force term
+		indi_force_torques(1) = final_torque(0); // roll torque
+		indi_force_torques(2) = final_torque(1); // pitch torque
+		indi_force_torques(3) = final_torque(2); // yaw torque
+
+		T_ = quadcopter.motor_allocation_inv_ * indi_force_torques;
+
+		
+		uint16_t outputs[MAX_ACTUATORS];
+		for (int i = 0; i < (int)math::min<unsigned>(_num_outputs, MAX_ACTUATORS); ++i) {
+			int val = static_cast<int>(T_(i));
+			// int val = 1;
+			val = math::constrain(val, DSHOT_MIN_THROTTLE, DSHOT_MAX_THROTTLE);
+			outputs[i] = static_cast<uint16_t>(val);
+		}
+
+		updateOutputs(false, outputs, _num_outputs, 1);
+	}
+	
+	// Vector<4> desired_force_torques = quadcopter.motor_allocation_ * T;
+	// Eigen::Vector3d desired_torque = desired_force_torques.tail(3); 
+	// desired_alpha = quadcopter.J_inv_ * (desired_torque - current_omega_.cross(quadcopter.J_ * current_omega_));
+
+	// Vector<3> omega_dot = (current_omega_ - last_omega_) / (uav_state.header.stamp - last_uav_state_.header.stamp).toSec();
+
+	// Vector<3> residual_torque = quadcopter.J_ * (desired_alpha - last_omega_dot_);
+	// Vector<4> measured_force_torques = quadcopter.motor_allocation_ * last_motor_thrusts_;
+	// Vector<3> final_torque = measured_force_torques.tail(3) + residual_torque;
+	// Vector<4> indi_force_torques = Vector<4>(desired_force_torques(0), final_torque(0), final_torque(1), final_torque(2));
+	// T = quadcopter.motor_allocation_inv_ * indi_force_torques;
+
+	// uint16_t motor_output = static_cast<uint16_t>(alpha_data.x); 
+
+	// uint16_t outputs[MAX_ACTUATORS] = {motor_output, motor_output, motor_output, motor_output}; 
+	// updateOutputs(false, outputs, 4, 1); 
+    
 }
 
 int DShot::custom_command(int argc, char *argv[])
@@ -785,7 +878,7 @@ int DShot::print_status()
 		PX4_INFO("telemetry on: %s", _telemetry_device);
 		_telemetry->handler.printStatus();
 	}
-
+	
 	return 0;
 }
 
