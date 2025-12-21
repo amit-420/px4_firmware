@@ -74,8 +74,10 @@
 #include <uORB/topics/vehicle_command.h>
 #include <uORB/topics/vehicle_command_ack.h>
 
-#include <random>
+#include <uORB/topics/debug_array.h>
 
+#include <random>
+#include <matrix/math.hpp>
 #include <mavlink.h>
 #include <mavlink_types.h>
 
@@ -108,6 +110,43 @@ static inline SensorSource operator &(A lhs, B rhs)
 		       static_cast<underlying>(rhs)
 	       );
 }
+// quadcopter model to hold motor_allocation matrix and inverse.
+// Values are predefined.
+struct QuadcopterModel {
+    
+    matrix::SquareMatrix<float, 4> motor_allocation_;
+    matrix::SquareMatrix<float, 4> motor_allocation_inv_;
+
+    matrix::SquareMatrix<float, 3> inertia_matrix_; 
+
+    QuadcopterModel() = default;
+
+    void set_motor_allocation()
+    {
+        const float m[16] = {
+         1.000000f,  1.000000f,  1.000000f,  1.000000f, // Row 0
+        -0.707107f,  0.707107f,  0.707107f, -0.707107f, // Row 1
+         0.707107f, -0.707107f,  0.707107f, -0.707107f, // Row 2
+         1.000000f,  1.000000f, -1.000000f, -1.000000f  // Row 3
+		};
+		motor_allocation_ = matrix::Matrix<float, 4, 4>(m);
+        // compute_inverse();
+		inertia_matrix_.zero(); // Ensure it starts clean
+		inertia_matrix_(0, 0) = 0.0049f;
+		inertia_matrix_(1, 1) = 0.0049f;
+		inertia_matrix_(2, 2) = 0.0065f;
+
+		// to be changed with real values of the inverse.
+		motor_allocation_inv_ = matrix::Matrix<float, 4, 4>(m);
+		printf("Inertia(0,0): %f\n", (double)inertia_matrix_(0,0));
+    }
+
+    // void compute_inverse()
+
+    
+    // }
+};
+
 
 class Simulator : public ModuleParams
 {
@@ -239,6 +278,7 @@ private:
 
 	void actuator_controls_from_outputs(mavlink_hil_actuator_controls_t *msg);
 
+	void actuator_controls_from_debug(mavlink_hil_actuator_controls_t *msg);
 
 	// uORB publisher handlers
 	uORB::Publication<vehicle_angular_velocity_s>	_vehicle_angular_velocity_ground_truth_pub{ORB_ID(vehicle_angular_velocity_groundtruth)};
@@ -259,6 +299,30 @@ private:
 
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
 	uORB::Subscription _vehicle_command_sub{ORB_ID(vehicle_command)};
+	
+	
+    // Changes for implementation of the INDI controller
+	QuadcopterModel quadcopter;
+	// quadcopter.set_motor_allocation();
+	uORB::Subscription _debug_array_sub{ORB_ID(debug_array)};
+	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
+	// uORB::Subscription _actuator_motors_sub{ORB_ID(actuator_motors)};
+
+	// motor thrust 
+	matrix::Vector<float, 4> last_motor_thrusts_{};
+	matrix::Vector<float, 4> current_motor_thrusts_{};
+	matrix::Vector3f desired_alpha{};
+	debug_array_s desired_data;
+	const float ang_acc_filter_alpha_ = 0.4;
+	bool _is_indi_on{false};
+
+	// motor thrust command computed by allocation inverse (T)
+	matrix::Vector<float, 4> T_{};
+
+    // angular rates and derivative
+    matrix::Vector3f last_omega_{};
+    matrix::Vector3f last_omega_dot_{};
+    hrt_abstime last_omega_time_{};
 
 	// hil map_ref data
 	MapProjection _global_local_proj_ref{};

@@ -279,6 +279,7 @@ MavlinkReceiver::handle_message(mavlink_message_t *msg)
 		break;
 
 	case MAVLINK_MSG_ID_DEBUG:
+		
 		handle_message_debug(msg);
 		break;
 
@@ -287,6 +288,7 @@ MavlinkReceiver::handle_message(mavlink_message_t *msg)
 		break;
 
 	case MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY:
+		// printf("message recievied of the debug float array");
 		handle_message_debug_float_array(msg);
 		break;
 #endif // !CONSTRAINED_FLASH
@@ -2868,7 +2870,7 @@ MavlinkReceiver::handle_message_debug_float_array(mavlink_message_t *msg)
 	for (size_t i = 0; i < debug_array_s::ARRAY_SIZE; i++) {
 		debug_topic.data[i] = debug_msg.data[i];
 	}
-
+	// printf("debug message data which is recieved: %f\n",  (double) debug_topic.data[0]);
 	_debug_array_pub.publish(debug_topic);
 }
 #endif // !CONSTRAINED_FLASH
