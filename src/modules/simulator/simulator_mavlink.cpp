@@ -248,6 +248,10 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 		for (int i = 0; i < 4; i++) {
 			current_motor_thrusts_(i) = _actuator_outputs.output[i];
 		}
+
+		// for (int i = 0; i < 4; i++) {
+		// 	printf("_actuator_outputs.output[%d] = %f\n", i, (double)_actuator_outputs.output[i]);
+		// }
 		// printf("current motor thrusts: %f, %f, %f, %f\n", (double)current_motor_thrusts_(0),(double)current_motor_thrusts_(1),(double)current_motor_thrusts_(2),(double)current_motor_thrusts_(3));
 		// tentative calculation using FIR filters, to be  replaced with IIR low pass filter.
 		last_omega_dot_ = ang_acc_filter_alpha_ * omega_dot + (1 - ang_acc_filter_alpha_) * last_omega_dot_;
@@ -255,45 +259,40 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 
 		// printf("last omega dot: %f, %f, %f\n", (double)last_omega_dot_(0), (double)last_omega_dot_(1), (double)last_omega_dot_(2));
 		// residual torque (use quadcopter inertia matrix)
-		printf("desired_alpha - last_omega_dot_: %f, %f, %f\n", (double)(desired_alpha(0) - last_omega_dot_(0)), (double)(desired_alpha(1) - last_omega_dot_(1)), (double)(desired_alpha(2) - last_omega_dot_(2)));
-		matrix::Vector3f residual_torque = quadcopter.inertia_matrix_ * (desired_alpha - last_omega_dot_);
-		printf("inertia matrix diagonal: %f, %f, %f\n", (double)quadcopter.inertia_matrix_(0, 0), (double)quadcopter.inertia_matrix_(1, 1), (double)quadcopter.inertia_matrix_(2, 2));
-		// printf("desired alpha: %f, %f, %f\n", (double)desired_alpha(0), (double)desired_alpha(1), (double)desired_alpha(2));
-		// printf("last motor thrusts: %f, %f, %f, %f\n", (double)last_motor_thrusts_(0), (double)last_motor_thrusts_(1), (double)last_motor_thrusts_(2), (double)last_motor_thrusts_(3));
-		// printf("residual torque: %f, %f, %f \n",(double)residual_torque(0),(double)residual_torque(1),(double)residual_torque(2));
-		
+		matrix::Vector3f residual_torque = quadcopter.J_ * (desired_alpha - last_omega_dot_);
+
 		// measured force/torques from last motor thrusts
+		last_motor_thrusts_ = (quadcopter.thrust_max / quadcopter.thrust_min) * (last_motor_thrusts_ - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN);
 		matrix::Vector<float, 4> measured_force_torques = quadcopter.motor_allocation_ * last_motor_thrusts_;
 
 		matrix::Vector3f last3(measured_force_torques.slice<3, 1>(1, 0));
 
-		matrix::Vector3f final_torque = last3 + residual_torque; // original ==== last3 + residual_torque;
-
+		matrix::Vector3f final_torque = last3 + residual_torque; 
+		printf("last3: %f, %f, %f\n", (double)last3(0), (double)last3(1), (double)last3(2));
+		printf("residual_torque: %f, %f, %f\n", (double)residual_torque(0), (double)residual_torque(1), (double)residual_torque(2));
+		printf("final_torque: %f, %f, %f\n", (double)final_torque(0), (double)final_torque(1), (double)final_torque(2));
 		matrix::Vector<float, 4> indi_force_torques;
 		
-		indi_force_torques(0) = desired_data.data[0]; // collective force term
+		indi_force_torques(0) = 0; // collective force term
 		indi_force_torques(1) = final_torque(0); // roll torque
 		indi_force_torques(2) = final_torque(1); // pitch torque
 		indi_force_torques(3) = final_torque(2); // yaw torque
 
 		T_ = quadcopter.motor_allocation_inv_ * indi_force_torques;
-		// printf("indi_force_torques: %f, %f, %f, %f\n", (double)indi_force_torques(0), (double)indi_force_torques(1), (double)indi_force_torques(2), (double)indi_force_torques(3));
-		printf("motor thrust values: %f, %f, %f, %f",(double)T_(0),(double)T_(1),(double)T_(2),(double)T_(3));
+		T_ = T_ + (quadcopter.thrust_min + desired_data.data[0]*(quadcopter.thrust_max - quadcopter.thrust_min));
+		printf("indi_force_torques: %f, %f, %f, %f\n", (double)indi_force_torques(0), (double)indi_force_torques(1), (double)indi_force_torques(2), (double)indi_force_torques(3));
+		printf("motor thrust values: %f, %f, %f, %f\n",(double)T_(0),(double)T_(1),(double)T_(2),(double)T_(3));
 		if (armed) {
-			for (unsigned i = 0; i < actuator_outputs_s::NUM_ACTUATOR_OUTPUTS; i++) {
+			for (unsigned i = 0; i < 4; i++) {
 				double val = static_cast<double>(T_(i));
-				// PWM normalisation and saturation implementatiindi_force_torqueson.
+				val = PWM_DEFAULT_MIN + ((val - quadcopter.thrust_min)/quadcopter.thrust_max)*(PWM_DEFAULT_MAX - PWM_DEFAULT_MIN);
+				printf("val[%u] = %f\n", (unsigned)i, val);
 				msg->controls[i] = (val - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN);
+				printf("msg->controls[%u] = %f\n", (unsigned)i, (double)msg->controls[i]);
 				msg->controls[i] = math::constrain(msg->controls[i], 0.f, 1.f);
+				printf("msg->controls after constraints:[%u] = %f\n", (unsigned)i, (double)msg->controls[i]);
 			}
 		}
-		// }
-		// test if the zero values are send..
-		// if (armed) {
-			// for (unsigned i = 0; i < actuator_outputs_s::NUM_ACTUATOR_OUTPUTS; i++) {
-				// msg->controls[i] = 0.0;
-			// }
-		// }
 	}
 	
 
@@ -313,7 +312,6 @@ void Simulator::send_controls()
 	if (_debug_array_sub.updated() && _is_indi_on == false) {
 		_debug_array_sub.copy(&desired_data);
 		_is_indi_on = true;
-		// printf("Debug array desired_data: %f, %f, %f, %f\n", (double)desired_data.data[0], (double)desired_data.data[1], (double)desired_data.data[2], (double)desired_data.data[3]);
 	}
 	
 	if (_actuator_outputs.timestamp > 0) {

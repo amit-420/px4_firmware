@@ -117,28 +117,43 @@ struct QuadcopterModel {
     matrix::SquareMatrix<float, 4> motor_allocation_;
     matrix::SquareMatrix<float, 4> motor_allocation_inv_;
 
-    matrix::SquareMatrix<float, 3> inertia_matrix_; 
+    matrix::SquareMatrix<float, 3> J_;
+	matrix::SquareMatrix<float, 3> J_inv_;
+
+	const float thrust_max = 17;
+	const float thrust_min = 0.5;
 
     QuadcopterModel() = default;
 
     void set_motor_allocation()
     {
         const float m[16] = {
-         1.000000f,  1.000000f,  1.000000f,  1.000000f, // Row 0
-        -0.707107f,  0.707107f,  0.707107f, -0.707107f, // Row 1
-         0.707107f, -0.707107f,  0.707107f, -0.707107f, // Row 2
-         1.000000f,  1.000000f, -1.000000f, -1.000000f  // Row 3
+         1.f,  1.f,  1.f,  1.f, // Row 0
+        -0.15f, 0.15f, -0.15f, 0.15f, // Row 1
+        -0.15f, 0.15f,  0.15f, -0.15f, // Row 2
+        -0.012f, -0.012f, 0.012f, 0.012f  // Row 3
 		};
 		motor_allocation_ = matrix::Matrix<float, 4, 4>(m);
-        // compute_inverse();
-		inertia_matrix_.zero(); // Ensure it starts clean
-		inertia_matrix_(0, 0) = 0.0049f;
-		inertia_matrix_(1, 1) = 0.0049f;
-		inertia_matrix_(2, 2) = 0.0065f;
+        
+		J_.zero(); 
+		J_(0, 0) = 0.007f;
+		J_(1, 1) = 0.007f;
+		J_(2, 2) = 0.01f;
 
-		// to be changed with real values of the inverse.
-		motor_allocation_inv_ = matrix::Matrix<float, 4, 4>(m);
-		printf("Inertia(0,0): %f\n", (double)inertia_matrix_(0,0));
+		// Inertia inverse matrix
+		J_inv_.zero();
+		J_inv_(0,0) = 142.85714286f;
+		J_inv_(1,1) = 142.85714286f;
+		J_inv_(2,2) = 100.0f;
+
+		const float m_inv[16] = {
+			0.25f, -1.66666667f,  -1.66666667f,  -20.83333333f,
+ 			0.25f,         1.66666667f,   1.66666667f, -20.83333333f,
+ 			0.25f,        -1.66666667f,   1.66666667f,  20.83333333f,
+ 			0.25f,         1.66666667f,  -1.66666667f,  20.83333333f
+		};
+		motor_allocation_inv_ = matrix::Matrix<float, 4, 4>(m_inv);
+		printf("Inertia(0,0): %f\n", (double)J_(0,0));
     }
 
     // void compute_inverse()
