@@ -73,7 +73,7 @@
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/vehicle_command.h>
 #include <uORB/topics/vehicle_command_ack.h>
-
+#include <uORB/topics/indi_status.h>
 #include <uORB/topics/debug_array.h>
 
 #include <random>
@@ -160,6 +160,41 @@ struct QuadcopterModel {
 
     
     // }
+};
+
+template <typename T, size_t L>
+class MovingAverageFIR {
+	private:
+		std::vector<T> buffer_;
+		size_t index_;
+		T sum_;
+		bool initialized_;
+
+	public:
+
+		MovingAverageFIR() : index_(0), initialized_(false) {
+			sum_ = T(); 
+			buffer_.resize(L, T());
+		}
+
+		T update(T input) {
+			// Handling initialization state to avoid "ramp-up" artifact
+			if (!initialized_) {
+				std::fill(buffer_.begin(), buffer_.end(), input);
+				sum_ = input * L;
+				initialized_ = true;
+			}
+
+			sum_ -= buffer_[index_];
+
+			buffer_[index_] = input;
+			
+			sum_ += input;
+
+			index_ = (index_ + 1) % L;
+
+			return sum_ / static_cast<float>(L);
+		}
 };
 
 
@@ -302,6 +337,9 @@ private:
 	uORB::Publication<vehicle_local_position_s>	_lpos_ground_truth_pub{ORB_ID(vehicle_local_position_groundtruth)};
 	uORB::Publication<input_rc_s>			_input_rc_pub{ORB_ID(input_rc)};
 
+	// changes for publishing the indi debug data
+	uORB::Publication<indi_status_s> _indi_status_pub{ORB_ID(indi_status)};
+
 	// HIL GPS
 	static constexpr int MAX_GPS = 3;
 	uORB::PublicationMulti<sensor_gps_s>	*_sensor_gps_pubs[MAX_GPS] {};
@@ -328,7 +366,6 @@ private:
 	matrix::Vector<float, 4> current_motor_thrusts_{};
 	matrix::Vector3f desired_alpha{};
 	debug_array_s desired_data;
-	const float ang_acc_filter_alpha_ = 0.4;
 	bool _is_indi_on{false};
 
 	// motor thrust command computed by allocation inverse (T)
@@ -338,6 +375,9 @@ private:
     matrix::Vector3f last_omega_{};
     matrix::Vector3f last_omega_dot_{};
     hrt_abstime last_omega_time_{};
+
+	MovingAverageFIR<matrix::Vector3f, 5> omega_filter;
+	MovingAverageFIR<matrix::Vector<float, 4>, 5> thrust_filter;
 
 	// hil map_ref data
 	MapProjection _global_local_proj_ref{};

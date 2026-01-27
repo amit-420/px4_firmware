@@ -96,6 +96,7 @@ set(msg_files
 	hover_thrust_estimate.msg
 	internal_combustion_engine_status.msg
 	input_rc.msg
+	indi_status.msg
 	iridiumsbd_status.msg
 	irlock_report.msg
 	landing_gear.msg
