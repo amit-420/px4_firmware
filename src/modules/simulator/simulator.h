@@ -73,11 +73,15 @@
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/vehicle_command.h>
 #include <uORB/topics/vehicle_command_ack.h>
+#include <uORB/topics/esc_status.h>
 #include <uORB/topics/indi_status.h>
 #include <uORB/topics/debug_array.h>
 
 #include <random>
 #include <matrix/math.hpp>
+#include <cmath>
+#include <vector>
+#include <mutex>
 #include <mavlink.h>
 #include <mavlink_types.h>
 
@@ -162,39 +166,77 @@ struct QuadcopterModel {
     // }
 };
 
-template <typename T, size_t L>
-class MovingAverageFIR {
-	private:
-		std::vector<T> buffer_;
-		size_t index_;
-		T sum_;
-		bool initialized_;
 
-	public:
 
-		MovingAverageFIR() : index_(0), initialized_(false) {
-			sum_ = T(); 
-			buffer_.resize(L, T());
-		}
+template <typename T>
+class ButterworthFilter {
+private:
+    // Filter Coefficients
+    float b0_, b1_, b2_;
+    float a1_, a2_;
+    T x1_, x2_; // Inputs: x[n-1], x[n-2]
+    T y1_, y2_; // Outputs: y[n-1], y[n-2]
 
-		T update(T input) {
-			// Handling initialization state to avoid "ramp-up" artifact
-			if (!initialized_) {
-				std::fill(buffer_.begin(), buffer_.end(), input);
-				sum_ = input * L;
-				initialized_ = true;
-			}
+    bool initialized_;
 
-			sum_ -= buffer_[index_];
+public:
+    ButterworthFilter(float sample_freq, float cutoff_freq) 
+        : initialized_(false) {
+        
+        // Initialize history states to zero (Scalar 0.0 or Vector3(0,0,0))
+        x1_ = T();
+        x2_ = T();
+        y1_ = T();
+        y2_ = T();
 
-			buffer_[index_] = input;
-			
-			sum_ += input;
+        compute_coefficients(sample_freq, cutoff_freq);
+    }
 
-			index_ = (index_ + 1) % L;
+    void compute_coefficients(float sample_freq, float cutoff_freq) {
+        if (sample_freq <= 0.0f) return;
 
-			return sum_ / static_cast<float>(L);
-		}
+        float T_sampling = 1.0f / sample_freq;
+        float w_target = 2.0f * M_PI * cutoff_freq; // Target digital angular frequency
+
+        // wc = (2/T) * tan(w_target * T / 2)
+        float wc = (2.0f / T_sampling) * std::tan(w_target * T_sampling / 2.0f);
+
+        // A = wc * T
+
+        float A = wc * T_sampling;
+
+        // Normalization Factor
+        float D0 = 4.0f + 2.0f * std::sqrt(2.0f) * A + A * A;
+
+		// Coefficients
+        b0_ = (A * A) / D0;
+        b1_ = 2.0f * b0_;
+        b2_ = b0_;
+
+        a1_ = (2.0f * A * A - 8.0f) / D0;
+        a2_ = (4.0f - 2.0f * std::sqrt(2.0f) * A + A * A) / D0;
+    }
+
+    T update(T input) {
+        if (!initialized_) {
+            x1_ = input;
+            x2_ = input;
+            y1_ = input;
+            y2_ = input;
+            initialized_ = true;
+        }
+
+        // y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+        T output =  b0_*input + b1_*x1_  + b2_*x2_ -  a1_*y1_- a2_*y2_;
+
+        // Update past variables
+        x2_ = x1_;
+        x1_ = input;
+        y2_ = y1_;
+        y1_ = output;
+
+        return output;
+    }
 };
 
 
@@ -314,6 +356,7 @@ private:
 	void handle_message_optical_flow(const mavlink_message_t *msg);
 	void handle_message_rc_channels(const mavlink_message_t *msg);
 	void handle_message_vision_position_estimate(const mavlink_message_t *msg);
+	void handle_message_esc_status(const mavlink_message_t *msg);
 
 	void parameters_update(bool force);
 	void poll_for_MAVLink_messages();
@@ -339,6 +382,7 @@ private:
 
 	// changes for publishing the indi debug data
 	uORB::Publication<indi_status_s> _indi_status_pub{ORB_ID(indi_status)};
+	uORB::Publication<esc_status_s> _esc_status_pub{ORB_ID(esc_status)};
 
 	// HIL GPS
 	static constexpr int MAX_GPS = 3;
@@ -366,7 +410,12 @@ private:
 	matrix::Vector<float, 4> current_motor_thrusts_{};
 	matrix::Vector3f desired_alpha{};
 	debug_array_s desired_data;
+	matrix::Vector3f current_omega;
 	bool _is_indi_on{false};
+	float cutoff_frequency = 10;
+	float nmpc_pub_time{};
+	std::mutex omega_mutex;
+	std::mutex thrust_mutex;
 
 	// motor thrust command computed by allocation inverse (T)
 	matrix::Vector<float, 4> T_{};
@@ -376,8 +425,9 @@ private:
     matrix::Vector3f last_omega_dot_{};
     hrt_abstime last_omega_time_{};
 
-	MovingAverageFIR<matrix::Vector3f, 5> omega_filter;
-	MovingAverageFIR<matrix::Vector<float, 4>, 5> thrust_filter;
+	ButterworthFilter<matrix::Vector3f> omega_filter{250,10};
+	ButterworthFilter<matrix::Vector<float, 4>> thrust_filter{250,10};
+	matrix::Vector<float, 4> get_interpolated_thrust(double t, const matrix::Matrix<float, 4, 10>& thrust_data);
 
 	// hil map_ref data
 	MapProjection _global_local_proj_ref{};
