@@ -124,7 +124,7 @@ struct QuadcopterModel {
     matrix::SquareMatrix<float, 3> J_;
 	matrix::SquareMatrix<float, 3> J_inv_;
 
-	const float thrust_max = 17;
+	const float thrust_max = 20;
 	const float thrust_min = 0.5;
 
     QuadcopterModel() = default;
@@ -410,7 +410,7 @@ private:
 	matrix::Vector<float, 4> current_motor_thrusts_{};
 	matrix::Vector3f desired_alpha{};
 	debug_array_s desired_data;
-	matrix::Vector3f current_omega;
+	
 	bool _is_indi_on{false};
 	float cutoff_frequency = 10;
 	float nmpc_pub_time{};
@@ -422,6 +422,8 @@ private:
 
     // angular rates and derivative
     matrix::Vector3f last_omega_{};
+	matrix::Vector3f current_omega;
+	matrix::Vector3f omega_dot{};
     matrix::Vector3f last_omega_dot_{};
     hrt_abstime last_omega_time_{};
 

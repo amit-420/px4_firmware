@@ -114,7 +114,8 @@ MavlinkReceiver::acknowledge(uint8_t sysid, uint8_t compid, uint16_t command, ui
 
 void
 MavlinkReceiver::handle_message(mavlink_message_t *msg)
-{
+{	
+	
 	switch (msg->msgid) {
 	case MAVLINK_MSG_ID_COMMAND_LONG:
 		handle_message_command_long(msg);
@@ -3211,7 +3212,6 @@ MavlinkReceiver::run()
 				/* if read failed, this loop won't execute */
 				for (ssize_t i = 0; i < nread; i++) {
 					if (mavlink_parse_char(_mavlink->get_channel(), buf[i], &msg, &_status)) {
-
 						/* check if we received version 2 and request a switch. */
 						if (!(_mavlink->get_status()->flags & MAVLINK_STATUS_FLAG_IN_MAVLINK1)) {
 							/* this will only switch to proto version 2 if allowed in settings */
@@ -3337,6 +3337,8 @@ void MavlinkReceiver::update_rx_stats(const mavlink_message_t &message)
 {
 	const bool component_states_has_still_space = [this, &message]() {
 		for (unsigned i = 0; i < MAX_REMOTE_COMPONENTS; ++i) {
+			// printf(" In rx compid: %d sysid: %d\n", message.compid, message.sysid);
+			// printf("real sys id: %d, comp id:%d\n",_component_states[i].system_id,_component_states[i].component_id);
 			if (_component_states[i].system_id == message.sysid && _component_states[i].component_id == message.compid) {
 
 				int lost_messages = 0;

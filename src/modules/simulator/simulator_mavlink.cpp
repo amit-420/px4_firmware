@@ -254,19 +254,16 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 	// 	thrust_commands(3, i) = desired_data.data[6 + 4*i];
 	// }
 	
-	desired_alpha(0) = desired_data.data[3];
-	desired_alpha(1) = desired_data.data[4];
-	desired_alpha(2) = desired_data.data[5];
-	desired_alpha(3) = desired_data.data[6];
-	
+	desired_alpha(0) = desired_data.data[4];
+	desired_alpha(1) = desired_data.data[5];
+	desired_alpha(2) = desired_data.data[6];
 
-	matrix::Vector3f omega_dot{0.0f, 0.0f, 0.0f};
+	omega_filter.compute_coefficients(250, cutoff_frequency);
+	thrust_filter.compute_coefficients(250, cutoff_frequency);
 
-	// matrix::Vector<float, 4> thrust_desired = get_interpolated_thrust(0, thrust_commands);
 	{
 		unique_lock omega_lock(omega_mutex);
-	
-		// printf("current omegea %f, %f, %f",(double)current_omega(0),(double)current_omega(1), (double)current_omega(2));
+		unique_lock thrust_lock(thrust_mutex);
 
 		float dt = 0.f;
 
@@ -279,22 +276,14 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 			last_omega_time_ = hrt_absolute_time();
 		}	
 
-		// printf("last omega time: %f", (double)last_omega_time_);
-
-		if (dt > 0.f) {
-			omega_dot = (current_omega - last_omega_) / dt;
-			last_omega_ = current_omega;
+		if (current_omega != last_omega_){
+			if (dt > 0.f) {
+				omega_dot = (current_omega - last_omega_) / dt;
+				last_omega_ = current_omega;
+			}
 		}
-	}
 	
-
-	omega_filter.compute_coefficients(10, cutoff_frequency);
-	thrust_filter.compute_coefficients(10, cutoff_frequency);
-
-	last_omega_dot_ = omega_filter.update(omega_dot);
-	
-	{
-		unique_lock thrust_lock(thrust_mutex);
+		last_omega_dot_ = omega_filter.update(omega_dot);
 		last_motor_thrusts_ = thrust_filter.update(current_motor_thrusts_);
 	}
 	
@@ -309,36 +298,33 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 
 	// measured force/torques from last motor thrusts
 	
-	matrix::Vector<float, 4> pwm_norm; 
+	// matrix::Vector<float, 4> pwm_norm; 
 	
-	for (int i = 0; i < 4; i++) {
-		pwm_norm(i) = last_motor_thrusts_(i) / 599;
-	}
+	// for (int i = 0; i < 4; i++) {
+	// 	pwm_norm(i) = (last_motor_thrusts_(i)/ 826.21);
+	// }
 
-	printf("rpm norm: pwm norm: %f , %f, %f, %f", pwm_norm(0),pwm_norm(1),pwm_norm(2),pwm_norm(3));
+	// printf("rpm norm: pwm norm: %f , %f, %f, %f", pwm_norm(0),pwm_norm(1),pwm_norm(2),pwm_norm(3));
 	matrix::Vector<float,4> thrust_force;
 	for (int i = 0; i < 4; i++)
 	{
-		// quadratic throttle model
-		// b = - 0.1765
-		// A = 0.26
-		double term = (pwm_norm(i) + 0.1765) / 0.26;
-		thrust_force(i) = term * term;
+		// thrust_force(i) = quadcopter.thrust_min + ((quadcopter.thrust_max - quadcopter.thrust_min)*pwm_norm(i));
+		thrust_force(i) = last_motor_thrusts_(i);
 	}
-	
 
 	matrix::Vector<float, 4> measured_force_torques = quadcopter.motor_allocation_ * thrust_force;
 
 	matrix::Vector3f last3(measured_force_torques.slice<3, 1>(1, 0));
 
 	matrix::Vector3f final_torque = last3 + residual_torque; 
-	printf("last3: %f, %f, %f\n", (double)last3(0), (double)last3(1), (double)last3(2));
-	printf("residual_torque: %f, %f, %f\n", (double)residual_torque(0), (double)residual_torque(1), (double)residual_torque(2));
-	printf("final_torque: %f, %f, %f\n", (double)final_torque(0), (double)final_torque(1), (double)final_torque(2));
+	// printf("last3: %f, %f, %f\n", (double)last3(0), (double)last3(1), (double)last3(2));
+	// printf("residual_torque: %f, %f, %f\n", (double)residual_torque(0), (double)residual_torque(1), (double)residual_torque(2));
+	// printf("final_torque: %f, %f, %f\n", (double)final_torque(0), (double)final_torque(1), (double)final_torque(2));
 	matrix::Vector<float, 4> indi_force_torques;
-	
+	// 
 	// float thrust_range = quadcopter.thrust_max - quadcopter.thrust_min;
-	float total_collective_force = desired_data.data[0];
+	float total_collective_force = desired_data.data[3];
+	// float total_collective_force = measured_force_torques(0);
 	// float total_collective_force = thrust_desired(0) + thrust_desired(1) + thrust_desired(2) + thrust_desired(3);
 
 	indi_force_torques(0) = total_collective_force; // collective force term
@@ -363,7 +349,6 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 		}
 	}
 	
-
 	// debuging the indi data 
 	// printf("for loop completed");
 	indi_status_s indi_log{};
@@ -380,13 +365,12 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 		indi_log.motor_thrusts_n[i] = static_cast<float>(T_(i)); 
 		indi_log.motor_pwm_norm[i]  = msg->controls[i];  
 		indi_log.indi_torques[i] = indi_force_torques(i);
-		indi_log.last_motor_thrusts[i] = pwm_norm(i);
+		indi_log.last_motor_thrusts[i] = last_motor_thrusts_(i);
+		indi_log.thrust_force[i] = thrust_force(i);
 	}
 	// printf("indi messsage writ2");
 	// Publish to uORB -> Logger picks this up automatically
 	_indi_status_pub.publish(indi_log);
-
-	
 
 	msg->mode = mode_flag_custom;
 	msg->mode |= (armed) ? mode_flag_armed : 0;
@@ -400,8 +384,8 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 void Simulator::send_controls()
 {	
 	orb_copy(ORB_ID(actuator_outputs), _actuator_outputs_sub, &_actuator_outputs);
-	
-	if (_debug_array_sub.updated() && _is_indi_on == false) {
+	//16.001 ms delay between each debug_array update, which is the same as the NMPC controller publish rate.
+	if (_debug_array_sub.updated()) {		
 		_debug_array_sub.copy(&desired_data);
 		_is_indi_on = true;
 	}
@@ -420,7 +404,7 @@ void Simulator::send_controls()
 		mavlink_msg_hil_actuator_controls_encode(_param_mav_sys_id.get(), _param_mav_comp_id.get(), &message, &hil_act_control);
 
 		PX4_DEBUG("sending controls t=%ld (%ld)", _actuator_outputs.timestamp, hil_act_control.time_usec);
-		printf("Control command send to the drone are: %f, %f, %f, %f\n", (double)hil_act_control.controls[0],(double)hil_act_control.controls[1], (double)hil_act_control.controls[2],(double)hil_act_control.controls[3]);
+		// printf("Control command send to the drone are: %f, %f, %f, %f\n", (double)hil_act_control.controls[0],(double)hil_act_control.controls[1], (double)hil_act_control.controls[2],(double)hil_act_control.controls[3]);
 
 		send_mavlink_message(message);
 	}
@@ -915,6 +899,8 @@ void Simulator::handle_message_esc_status(const mavlink_message_t * msg)
 
 	es.timestamp = esc_status.time_usec;
 	es.esc_count = 4;
+	double rotor_velocity_slowdown_sim = 0.0159236;
+	double motor_constant_ = 20.21;
 
 	{
 		unique_lock lock(thrust_mutex);
@@ -923,8 +909,8 @@ void Simulator::handle_message_esc_status(const mavlink_message_t * msg)
 			esc_report_s esr{};
 			esr.esc_rpm = safe_rpm;
 			// motor rpm values are between 0 to 599
-			current_motor_thrusts_(i) =  static_cast<float>(safe_rpm);
-			// printf("current rpm of motor: [%d] is : %f\n", i, current_motor_thrusts_(i));
+			current_motor_thrusts_(i) =  static_cast<float>((safe_rpm *rotor_velocity_slowdown_sim)/ 9.54929658551) * static_cast<float>((safe_rpm *rotor_velocity_slowdown_sim)/ 9.54929658551) * motor_constant_;
+			// printf("current force from motor: [%d] is : %f\n", i, current_motor_thrusts_(i));
 			esr.esc_voltage = esc_status.voltage[i];
 			esr.esc_current = esc_status.current[i];
 			es.esc[i] = esr; 
