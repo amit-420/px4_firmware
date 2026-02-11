@@ -124,7 +124,7 @@ struct QuadcopterModel {
     matrix::SquareMatrix<float, 3> J_;
 	matrix::SquareMatrix<float, 3> J_inv_;
 
-	const float thrust_max = 20;
+	const float thrust_max = 17;
 	const float thrust_min = 0.5;
 
     QuadcopterModel() = default;
@@ -137,12 +137,18 @@ struct QuadcopterModel {
         -0.15f, 0.15f,  0.15f, -0.15f, // Row 2
         -0.012f, -0.012f, 0.012f, 0.012f  // Row 3
 		};
+		// const float m[16] = {
+        //  1.f,  1.f,  1.f,  1.f, // Row 0
+        //  0.15f, -0.15f, 0.15f, -0.15f, // Row 1
+        // -0.15f, 0.15f,  0.15f, -0.15f, // Row 2
+        // -0.012f, -0.012f, 0.012f, 0.012f  // Row 3
+		// };
 		motor_allocation_ = matrix::Matrix<float, 4, 4>(m);
         
 		J_.zero(); 
-		J_(0, 0) = 0.007f;
-		J_(1, 1) = 0.007f;
-		J_(2, 2) = 0.01f;
+		J_(0, 0) = 0.007f;//0.007f;
+		J_(1, 1) = 0.007f;//0.007f;
+		J_(2, 2) = 0.001f;//0.01f;
 
 		// Inertia inverse matrix
 		J_inv_.zero();
@@ -156,6 +162,12 @@ struct QuadcopterModel {
  			0.25f,        -1.66666667f,   1.66666667f,  20.83333333f,
  			0.25f,         1.66666667f,  -1.66666667f,  20.83333333f
 		};
+		// const float m_inv[16] = {
+		// 	0.25f, 		1.66666667f,  -1.66666667f,  -20.83333333f,
+ 		// 	0.25f,       -1.66666667f,   1.66666667f, -20.83333333f,
+ 		// 	0.25f,       1.66666667f,   1.66666667f,  20.83333333f,
+ 		// 	0.25f,       -1.66666667f,  -1.66666667f, 20.83333333f
+		// };
 		motor_allocation_inv_ = matrix::Matrix<float, 4, 4>(m_inv);
 		printf("Inertia(0,0): %f\n", (double)J_(0,0));
     }
@@ -410,12 +422,15 @@ private:
 	matrix::Vector<float, 4> current_motor_thrusts_{};
 	matrix::Vector3f desired_alpha{};
 	debug_array_s desired_data;
+	indi_status_s indi_log{};
 	
 	bool _is_indi_on{false};
 	float cutoff_frequency = 10;
 	float nmpc_pub_time{};
 	std::mutex omega_mutex;
 	std::mutex thrust_mutex;
+	float current_esc_time{};
+	float current_omega_time{};
 
 	// motor thrust command computed by allocation inverse (T)
 	matrix::Vector<float, 4> T_{};
