@@ -121,7 +121,8 @@ MixerGroup::get_trims(int16_t *values)
 
 void
 MixerGroup::set_thrust_factor(float val)
-{
+{	
+	printf("MixerGroup::set_thrust_factor: %f\n", (double)val);
 	for (auto mixer : _mixers) {
 		mixer->set_thrust_factor(val);
 	}

@@ -242,35 +242,31 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 	bool armed = (_vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED);
 
 	_debug_array_sub.copy(&desired_data);
-
-	cutoff_frequency = desired_data.data[0];
+	if (desired_data.data[0] > 0) {	
+		cutoff_frequency = desired_data.data[0];
+	}
 	nmpc_pub_time = desired_data.data[1];
 	int N = desired_data.data[2];
 
 	if (N > 10) {
         N = 10;
     }
-	// matrix::Matrix<float,4,10> thrust_commands;
-	// for(int i = 0; i < N; i++){
-	// 	thrust_commands(0, i) = desired_data.data[3 + 4*i];
-	// 	thrust_commands(1, i) = desired_data.data[4 + 4*i];
-	// 	thrust_commands(2, i) = desired_data.data[5 + 4*i];
-	// 	thrust_commands(3, i) = desired_data.data[6 + 4*i];
-	// }
+
+	matrix::Vector3f desired_alpha_nmpc;
+	desired_alpha_nmpc(0) = desired_data.data[4];
+	desired_alpha_nmpc(1) = -1*desired_data.data[5];
+	desired_alpha_nmpc(2) = -1*desired_data.data[6];
+		for (int i = 0; i < 3; i++)
+	{
+		indi_log.desired_alpha_nmpc[i] = desired_alpha_nmpc(i);
+	}
 	
-	// desired_alpha(0) = desired_data.data[4];
-	// desired_alpha(1) = desired_data.data[5];
-	// desired_alpha(2) = desired_data.data[6];
-	matrix::Vector<float, 4> motor_force_desired;
-	// motor_force_desired(0) = desired_data.data[3];
-	// motor_force_desired(1) = desired_data.data[4];
-	// motor_force_desired(2) = desired_data.data[5];
-	// motor_force_desired(3) = desired_data.data[6];
+	matrix::Vector<float, 4> motor_force_desired;	
 	// using the actuator output instead of thrust force commands from nmpc directly.
-	motor_force_desired(0) = ((_actuator_outputs.output[0] - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN)) * quadcopter.thrust_max;
-	motor_force_desired(1) = ((_actuator_outputs.output[1] - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN)) * quadcopter.thrust_max;
-	motor_force_desired(2) = ((_actuator_outputs.output[2] - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN)) * quadcopter.thrust_max;
-	motor_force_desired(3) = ((_actuator_outputs.output[3] - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN)) * quadcopter.thrust_max;
+	motor_force_desired(0) = quadcopter.thrust_min + std::pow((_actuator_outputs.output[0] - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN), 1.0f) * (quadcopter.thrust_max - quadcopter.thrust_min);
+	motor_force_desired(1) = quadcopter.thrust_min + std::pow((_actuator_outputs.output[1] - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN), 1.0f) * (quadcopter.thrust_max - quadcopter.thrust_min);
+	motor_force_desired(2) = quadcopter.thrust_min + std::pow((_actuator_outputs.output[2] - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN), 1.0f) * (quadcopter.thrust_max - quadcopter.thrust_min);
+	motor_force_desired(3) = quadcopter.thrust_min + std::pow((_actuator_outputs.output[3] - PWM_DEFAULT_MIN) / (PWM_DEFAULT_MAX - PWM_DEFAULT_MIN), 1.0f) * (quadcopter.thrust_max - quadcopter.thrust_min);
 
 	omega_filter.compute_coefficients(250, cutoff_frequency);
 	thrust_filter.compute_coefficients(250, cutoff_frequency);
@@ -278,10 +274,6 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 	{
 		unique_lock omega_lock(omega_mutex);
 		unique_lock thrust_lock(thrust_mutex);
-		printf("current_omega timestamp: %f, current_esc_time: %f\n", (double)current_omega_time, (double)current_esc_time);
-
-		indi_log.current_omega_time = current_omega_time;
-		indi_log.current_esc_time = current_esc_time;
 
 		float dt = 0.f;
 
@@ -301,9 +293,6 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 			}
 		}
 
-		// float alpha = 0.57f;
-		// last_omega_dot_ = alpha * last_omega_dot_ + (1 - alpha) * omega_dot;
-		// last_motor_thrusts_ = alpha * last_motor_thrusts_ + (1 - alpha) * current_motor_thrusts_;
 		
 		last_omega_dot_ = omega_filter.update(omega_dot);
 		for (int i = 0; i < 3; i++)
@@ -319,16 +308,20 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 			indi_log.motor_thrusts[i] = current_motor_thrusts_(i);
 			indi_log.motor_thrusts_filtered[i] = last_motor_thrusts_(i);
 		}
+		matrix::Vector<float, 4> torqus_calculated = quadcopter.motor_allocation_ * current_motor_thrusts_;
+		matrix::Vector3f torqus_calculated_3d = torqus_calculated.slice<3, 1>(1, 0);
+		indi_log.omega_dot_calculated[0] = quadcopter.J_inv_(0, 0) * (torqus_calculated_3d - current_omega.cross(quadcopter.J_ * current_omega))(0);
+		indi_log.omega_dot_calculated[1] = quadcopter.J_inv_(1, 1) * (torqus_calculated_3d - current_omega.cross(quadcopter.J_ * current_omega))(1);
+		indi_log.omega_dot_calculated[2] = quadcopter.J_inv_(2, 2) * (torqus_calculated_3d - current_omega.cross(quadcopter.J_ * current_omega))(2);
 		
 	}
-	
-	// printf("last omega dot: %f, %f, %f\n", (double)last_omega_dot_(0), (double)last_omega_dot_(1), (double)last_omega_dot_(2));
-	// residual torque (use quadcopter inertia matrix)
 	
 	matrix::Vector<float, 4> desired_torques = quadcopter.motor_allocation_ * motor_force_desired;
 	matrix::Vector3f desired_torque = desired_torques.slice<3, 1>(1, 0);
 	desired_alpha = quadcopter.J_inv_ * (desired_torque - current_omega.cross(quadcopter.J_ * current_omega));
 	matrix::Vector3f residual_torque = quadcopter.J_ * (desired_alpha - last_omega_dot_);
+
+	matrix::Vector3f residual_torque_nmpc = quadcopter.J_ * (desired_alpha_nmpc - last_omega_dot_);
 
 	//  Calculation of  Tau_f + Delta_tau. Tau_f is the torque from the last motor thrusts, and Delta_tau is the residual torque.
 	matrix::Vector<float, 4> measured_force_torques = quadcopter.motor_allocation_ * last_motor_thrusts_;
@@ -337,10 +330,14 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 
 	matrix::Vector3f final_torque = last3 + residual_torque; 
 
+	matrix::Vector3f final_torque_nmpc = last3 + residual_torque_nmpc;
+
 	matrix::Vector<float, 4> indi_force_torques;
-	// 
+	matrix::Vector<float, 4> indi_force_torques_nmpc;
+	
 	// float thrust_range = quadcopter.thrust_max - quadcopter.thrust_min;
 	float total_collective_force = desired_torques(0);
+	float total_collective_force_nmpc = desired_data.data[3]+8.0f; // desired_data.data[3] is the collective thrust command from nmpc, and 8.0f is an offset to make it around the hover thrust for better performance of the controller.
 	// float total_collective_force = measured_force_torques(0);
 	// float total_collective_force = thrust_desired(0) + thrust_desired(1) + thrust_desired(2) + thrust_desired(3);
 
@@ -348,38 +345,50 @@ void Simulator::actuator_controls_from_debug(mavlink_hil_actuator_controls_t *ms
 	indi_force_torques(1) = final_torque(0); // roll torque
 	indi_force_torques(2) = final_torque(1); // pitch torque
 	indi_force_torques(3) = final_torque(2); // yaw torque
+
+	indi_force_torques_nmpc(0) = total_collective_force_nmpc; // collective force term
+	indi_force_torques_nmpc(1) = final_torque_nmpc(0); // roll torque
+	indi_force_torques_nmpc(2) = final_torque_nmpc(1); // pitch torque
+	indi_force_torques_nmpc(3) = final_torque_nmpc(2); // yaw torque	
 	
 	T_ = quadcopter.motor_allocation_inv_ * indi_force_torques;
+
+	T_nmpc = quadcopter.motor_allocation_inv_ * indi_force_torques_nmpc;
 	// T_ = T_ + (quadcopter.thrust_min + desired_data.data[0]*(quadcopter.thrust_max - quadcopter.thrust_min));
 	// printf("indi_force_torques: %f, %f, %f, %f\n", (double)indi_force_torques(0), (double)indi_force_torques(1), (double)indi_force_torques(2), (double)indi_force_torques(3));
 	// printf("motor thrust values: %f, %f, %f, %f\n",(double)T_(0),(double)T_(1),(double)T_(2),(double)T_(3));
 	if (armed) {
 		for (unsigned i = 0; i < 4; i++) {
 			// printf("%u\n", (unsigned)i);
-			double val = static_cast<double>(T_(i));
+			double val = static_cast<double>(T_nmpc(i));
 			val = ((val- quadcopter.thrust_min)/(quadcopter.thrust_max - quadcopter.thrust_min));
 			// val = val/20.21;
 			// printf("val[%u] = %f\n", (unsigned)i, val);
 			msg->controls[i] = std::abs(val);
+			// msg->controls[i] = 0.26f * std::sqrt(std::abs(val)) - 0.1765f;
 			// printf("msg->controls[%u] = %f\n", (unsigned)i, (double)msg->controls[i]);
 			msg->controls[i] = math::constrain(msg->controls[i], 0.f, 1.f);
-			printf("msg->controls after constraints:[%u] = %f\n", (unsigned)i, (double)msg->controls[i]);
+			// printf("msg->controls after constraints:[%u] = %f\n", (unsigned)i, (double)msg->controls[i]);
 		}
 	}
 	
 	for(int i=0; i<3; i++) {
 		indi_log.desired_alpha[i]   = desired_alpha(i);
+		indi_log.desired_alpha_nmpc[i]   = desired_alpha_nmpc(i);
 		indi_log.residual_torque[i] = residual_torque(i);
+		indi_log.residual_torque_nmpc[i] = residual_torque_nmpc(i);
 		indi_log.last3[i]    = last3(i);
 		indi_log.final_torque[i]    = final_torque(i);
-		
+		indi_log.final_torque_nmpc[i] = final_torque_nmpc(i);
 	}
 
 	for(int i=0; i<4; i++) {
 		indi_log.motor_force_desired[i] = motor_force_desired(i);
 		indi_log.motor_thrusts_c[i] = static_cast<float>(T_(i)); 
+		indi_log.motor_thrusts_c_nmpc[i] = static_cast<float>(T_nmpc(i)); 
 		indi_log.motor_pwm_norm[i]  = msg->controls[i];  
 		indi_log.indi_torques[i] = indi_force_torques(i);
+		indi_log.indi_torques_nmpc[i] = indi_force_torques_nmpc(i);
 	}
 	
 	_indi_status_pub.publish(indi_log);
@@ -738,7 +747,7 @@ void Simulator::handle_message_hil_state_quaternion(const mavlink_message_t *msg
 	mavlink_hil_state_quaternion_t hil_state;
 	mavlink_msg_hil_state_quaternion_decode(msg, &hil_state);
 
-	uint64_t timestamp = hrt_absolute_time();
+	uint64_t timestamp = hrt_absolute_time();  
 
 	/* angular velocity */
 	vehicle_angular_velocity_s hil_angular_velocity{};
@@ -926,11 +935,13 @@ void Simulator::handle_message_esc_status(const mavlink_message_t * msg)
 			esr.esc_rpm = safe_rpm;
 			// motor rpm values are between 0 to 599
 			current_motor_thrusts_(i) =  static_cast<float>((safe_rpm *rotor_velocity_slowdown_sim)/ 9.54929658551) * static_cast<float>((safe_rpm *rotor_velocity_slowdown_sim)/ 9.54929658551) * motor_constant_;
+			// current_motor_thrusts_(i) =  static_cast<float>((safe_rpm *rotor_velocity_slowdown_sim)/ 9.54929658551) * motor_constant_;
 			// printf("current force from motor: [%d] is : %f\n", i, current_motor_thrusts_(i));
 			esr.esc_voltage = esc_status.voltage[i];
 			esr.esc_current = esc_status.current[i];
 			es.esc[i] = esr; 
 		}
+
 	}
   	// _esc_status_pub.publish(es);
 }

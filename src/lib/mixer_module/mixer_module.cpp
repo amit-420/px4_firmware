@@ -186,7 +186,7 @@ void MixingOutput::updateParams()
 		if (_param_mot_slew_max.get() <= FLT_EPSILON) {
 			_mixers->set_max_delta_out_once(0.f);
 		}
-
+		printf("mixer thrust_factor: %f\n",(double) _param_thr_mdl_fac.get());
 		_mixers->set_thrust_factor(_param_thr_mdl_fac.get());
 		_mixers->set_airmode((Mixer::Airmode)_param_mc_airmode.get());
 	}

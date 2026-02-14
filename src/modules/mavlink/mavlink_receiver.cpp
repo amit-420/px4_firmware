@@ -1137,7 +1137,7 @@ MavlinkReceiver::handle_message_set_position_target_local_ned(mavlink_message_t 
 				     "SET_POSITION_TARGET_LOCAL_NED: FORCE is not supported");
 			return;
 		}
-
+		printf("ocm active ?..: pos %d vel %d acc %d\n", ocm.position, ocm.velocity, ocm.acceleration);
 		if (ocm.position || ocm.velocity || ocm.acceleration) {
 			// publish offboard_control_mode
 			ocm.timestamp = hrt_absolute_time();
@@ -1294,6 +1294,7 @@ MavlinkReceiver::handle_message_set_actuator_control_target(mavlink_message_t *m
 	PX4_ERR("https://dev.px4.io/master/en/simulation/#disable-lockstep-simulation");
 	return;
 #endif
+	printf("actuator control target...........................\n");
 
 	mavlink_set_actuator_control_target_t actuator_target;
 	mavlink_msg_set_actuator_control_target_decode(msg, &actuator_target);
@@ -1599,6 +1600,7 @@ MavlinkReceiver::handle_message_set_attitude_target(mavlink_message_t *msg)
 		}
 
 		if (attitude) {
+			// printf("attitude setpoint...........................\n");
 			vehicle_attitude_setpoint_s attitude_setpoint{};
 
 			const matrix::Quatf q{attitude_target.q};
@@ -1640,6 +1642,7 @@ MavlinkReceiver::handle_message_set_attitude_target(mavlink_message_t *msg)
 		}
 
 		if (body_rates) {
+			// printf("body rate setpoint...........................\n");
 			vehicle_rates_setpoint_s setpoint{};
 			setpoint.roll  = (type_mask & ATTITUDE_TARGET_TYPEMASK_BODY_ROLL_RATE_IGNORE)  ? (float)NAN :
 					 attitude_target.body_roll_rate;
